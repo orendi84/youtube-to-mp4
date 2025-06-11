@@ -7,6 +7,9 @@ import time
 import shutil
 from pathlib import Path
 
+# Default file to store YouTube URL
+DEFAULT_URL_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "youtube_url.txt")
+
 def download_video(url, output_path=None, quality='best', audio_only=False):
     """
     Download a YouTube video and save it as an MP4 file.
@@ -108,9 +111,18 @@ def download_video(url, output_path=None, quality='best', audio_only=False):
         except Exception as e:
             print(f"Error cleaning up temp files: {e}")
 
+def read_url_from_file():
+    """Read YouTube URL from the default file if it exists."""
+    if os.path.exists(DEFAULT_URL_FILE):
+        with open(DEFAULT_URL_FILE, 'r') as f:
+            url = f.read().strip()
+            if url:
+                return url
+    return None
+
 def main():
     parser = argparse.ArgumentParser(description='Download YouTube videos as MP4 files (including audio-only)')
-    parser.add_argument('url', help='YouTube video URL')
+    parser.add_argument('url', nargs='?', help='YouTube video URL')
     parser.add_argument('-o', '--output', help='Output directory (default: ~/Downloads)')
     parser.add_argument('-q', '--quality', default='best', 
                         help='Video quality (best, 1080p, 720p, 480p, 360p, 240p, 144p)')
@@ -118,7 +130,17 @@ def main():
                         help='Download audio only (as MP4)')
     
     args = parser.parse_args()
-    download_video(args.url, args.output, args.quality, args.audio_only)
+    
+    # If URL is not provided as argument, try to read from file
+    url = args.url
+    if not url:
+        url = read_url_from_file()
+        if not url:
+            print("No URL provided and no URL found in youtube_url.txt")
+            print("Please either provide a URL as an argument or create a file named 'youtube_url.txt' with the URL")
+            return
+    
+    download_video(url, args.output, args.quality, args.audio_only)
 
 if __name__ == "__main__":
     main() 
