@@ -10,7 +10,7 @@ from pathlib import Path
 # Default file to store YouTube URL
 DEFAULT_URL_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "youtube_url.txt")
 
-def download_video(url, output_path=None, quality='best', audio_only=False):
+def download_video(url, output_path=None, quality='best', audio_only=True):
     """
     Download a YouTube video and save it as an MP4 file.
     
@@ -135,8 +135,10 @@ def main():
     parser.add_argument('-o', '--output', help='Output directory (default: ~/Downloads)')
     parser.add_argument('-q', '--quality', default='best', 
                         help='Video quality (best, 1080p, 720p, 480p, 360p, 240p, 144p)')
-    parser.add_argument('-a', '--audio-only', action='store_true', 
-                        help='Download audio only (as MP4)')
+    parser.add_argument('-a', '--audio-only', action='store_true', default=True,
+                        help='Download audio only (as MP4) - default behavior')
+    parser.add_argument('-v', '--video', action='store_true', 
+                        help='Download video (overrides default audio-only mode)')
     
     args = parser.parse_args()
     
@@ -149,7 +151,10 @@ def main():
             print("Please either provide a URL as an argument or create a file named 'youtube_url.txt' with the URL")
             return
     
-    download_video(url, args.output, args.quality, args.audio_only)
+    # If --video flag is used, override the default audio-only behavior
+    audio_only = args.audio_only and not args.video
+    
+    download_video(url, args.output, args.quality, audio_only)
 
 if __name__ == "__main__":
     main() 
