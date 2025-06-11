@@ -2,6 +2,7 @@
 
 import argparse
 import os
+import glob
 from pathlib import Path
 
 def download_video(url, output_path=None, quality='best', audio_only=False):
@@ -33,11 +34,22 @@ def download_video(url, output_path=None, quality='best', audio_only=False):
     if audio_only:
         ydl_opts = {
             'format': 'bestaudio/best',
-            'merge_output_format': 'mp4',  # Use MP4 for audio too
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp4',
+                'preferredquality': '192',
+            }],
             'outtmpl': output_template,
             'quiet': False,
             'progress': True,
             'no_warnings': False,
+            # Force extension to be mp4
+            'fixup': 'detect_or_warn',
+            'postprocessor_args': [
+                '-c:a', 'aac',
+            ],
+            # Clean up intermediate files
+            'keepvideo': False,
         }
         print("Audio-only mode: Downloading audio as MP4...")
     else:
@@ -60,6 +72,18 @@ def download_video(url, output_path=None, quality='best', audio_only=False):
         print(f"Downloading from: {url}")
         print(f"Target folder: {output_path}")
         ydl.download([url])
+        
+        # If audio-only, ensure we have only mp4 files
+        if audio_only:
+            # Try to clean up any webm files that might be left
+            title = ydl.extract_info(url, download=False).get('title', '').replace('/', '_')
+            for webm_file in glob.glob(os.path.join(output_path, f"{title}*.webm")):
+                try:
+                    os.remove(webm_file)
+                    print(f"Cleaned up: {webm_file}")
+                except:
+                    pass
+                    
         print(f"Download complete! {'Audio' if audio_only else 'Video'} saved to {output_path}")
 
 def main():
