@@ -13,7 +13,7 @@ A simple Python tool to download YouTube videos as MP4 files.
 
 1. Clone this repository:
 ```
-git clone https://github.com/YOUR_USERNAME/youtube-to-mp4.git
+git clone https://github.com/orendi84/youtube-to-mp4.git
 cd youtube-to-mp4
 ```
 
