@@ -1,11 +1,11 @@
 # YouTube to MP4 Converter
 
-A simple Python tool to download YouTube videos as MP4 files or extract audio as MP3.
+A simple Python tool to download YouTube videos as MP4 files, including audio-only MP4 option.
 
 ## Features
 
 - Download YouTube videos in various quality settings
-- Extract audio-only as MP3 files
+- Extract audio-only as MP4 files (no FFmpeg required)
 - Simple command-line interface
 - Automatically installs dependencies if needed
 - Specify custom output directory
@@ -30,7 +30,7 @@ pip install -r requirements.txt
 python youtube_downloader.py "https://www.youtube.com/watch?v=VIDEO_ID"
 ```
 
-### Audio-only mode (extracts MP3):
+### Audio-only mode (MP4 audio):
 ```
 python youtube_downloader.py "https://www.youtube.com/watch?v=VIDEO_ID" --audio-only
 ```
@@ -64,7 +64,6 @@ python youtube_downloader.py "https://www.youtube.com/watch?v=VIDEO_ID" -q 720p 
 
 - Python 3.6+
 - yt-dlp library (automatically installed if missing)
-- FFmpeg (required for audio extraction)
 
 ## License
 
