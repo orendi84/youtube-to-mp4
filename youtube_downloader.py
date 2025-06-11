@@ -3,6 +3,7 @@
 import argparse
 import os
 import glob
+import time
 from pathlib import Path
 
 def download_video(url, output_path=None, quality='best', audio_only=False):
@@ -28,28 +29,25 @@ def download_video(url, output_path=None, quality='best', audio_only=False):
     
     os.makedirs(output_path, exist_ok=True)
     
-    output_template = os.path.join(output_path, '%(title)s.%(ext)s')
+    # Get a timestamp for unique filenames
+    timestamp = int(time.time())
+    output_template = os.path.join(output_path, f'%(title)s_{timestamp}.%(ext)s')
     
     # Configure options
     if audio_only:
+        # This approach doesn't require FFmpeg
         ydl_opts = {
-            'format': 'bestaudio/best',
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp4',
-                'preferredquality': '192',
-            }],
+            # Get best audio-only format in MP4 container, or any other MP4 if not available
+            'format': 'bestaudio[ext=m4a]/bestaudio/best[ext=mp4]/best',
             'outtmpl': output_template,
             'quiet': False,
             'progress': True,
             'no_warnings': False,
-            # Force extension to be mp4
-            'fixup': 'detect_or_warn',
-            'postprocessor_args': [
-                '-c:a', 'aac',
-            ],
-            # Clean up intermediate files
+            # Keep only one file
             'keepvideo': False,
+            'writethumbnail': False,
+            'writesubtitles': False,
+            'writeautomaticsub': False,
         }
         print("Audio-only mode: Downloading audio as MP4...")
     else:
@@ -71,19 +69,29 @@ def download_video(url, output_path=None, quality='best', audio_only=False):
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         print(f"Downloading from: {url}")
         print(f"Target folder: {output_path}")
-        ydl.download([url])
+        info = ydl.extract_info(url, download=True)
         
-        # If audio-only, ensure we have only mp4 files
+        # If audio-only, rename to MP4 if needed
+        if audio_only and 'ext' in info and info['ext'] != 'mp4':
+            original_path = os.path.join(output_path, f"{info['title']}_{timestamp}.{info['ext']}")
+            new_path = os.path.join(output_path, f"{info['title']}_{timestamp}.mp4")
+            try:
+                os.rename(original_path, new_path)
+                print(f"Renamed to .mp4 extension")
+            except Exception as e:
+                print(f"Error renaming file: {e}")
+                
+        # Clean up any extra files
         if audio_only:
-            # Try to clean up any webm files that might be left
-            title = ydl.extract_info(url, download=False).get('title', '').replace('/', '_')
-            for webm_file in glob.glob(os.path.join(output_path, f"{title}*.webm")):
-                try:
-                    os.remove(webm_file)
-                    print(f"Cleaned up: {webm_file}")
-                except:
-                    pass
-                    
+            # Keep only the desired MP4 file and delete anything else with this timestamp
+            for extra_file in glob.glob(os.path.join(output_path, f"*_{timestamp}.*")):
+                if not extra_file.endswith('.mp4'):
+                    try:
+                        os.remove(extra_file)
+                        print(f"Cleaned up: {extra_file}")
+                    except:
+                        pass
+                     
         print(f"Download complete! {'Audio' if audio_only else 'Video'} saved to {output_path}")
 
 def main():
