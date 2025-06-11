@@ -11,6 +11,7 @@ from pathlib import Path
 DEFAULT_URL_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "youtube_url.txt")
 
 def download_video(url, output_path=None, quality='best', audio_only=True):
+    
     """
     Download a YouTube video and save it as an MP4 file.
     
@@ -42,9 +43,10 @@ def download_video(url, output_path=None, quality='best', audio_only=True):
     
     # Configure options
     if audio_only:
-        # Direct download of m4a file (will be moved to MP4 later)
+        # Download best audio and convert to MP3
+        ffmpeg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ffmpeg')
         ydl_opts = {
-            'format': 'm4a/bestaudio/best',
+            'format': 'bestaudio/best',
             'outtmpl': output_template,
             'quiet': False,
             'progress': True,
@@ -53,8 +55,14 @@ def download_video(url, output_path=None, quality='best', audio_only=True):
             'writethumbnail': False,
             'writesubtitles': False,
             'writeautomaticsub': False,
+            'ffmpeg_location': ffmpeg_path,
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }],
         }
-        print("Audio-only mode: Downloading audio...")
+        print("Audio-only mode: Downloading and converting to MP3...")
     else:
         # Use single format to avoid ffmpeg requirement
         if quality == 'best':
@@ -93,7 +101,7 @@ def download_video(url, output_path=None, quality='best', audio_only=True):
         downloaded_file = os.path.join(temp_dir, downloaded_files[0])
         
         # Set the final filename and move the file
-        final_ext = 'mp4'  # Always use MP4 extension
+        final_ext = 'mp3' if audio_only else 'mp4'  # Use MP3 for audio, MP4 for video
         final_filename = f"{title}.{final_ext}"
         final_path = os.path.join(output_path, final_filename)
         
