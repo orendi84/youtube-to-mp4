@@ -5,12 +5,145 @@ import os
 import glob
 import time
 import shutil
+import subprocess
+import json
 from pathlib import Path
 
 # Default file to store YouTube URL
 DEFAULT_URL_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "youtube_url.txt")
 
-def download_video(url, output_path=None, quality='best', audio_only=True):
+def get_audio_duration(file_path, ffmpeg_path):
+    """
+    Get the duration of an audio file in seconds using ffprobe.
+    
+    Args:
+        file_path: Path to the audio file
+        ffmpeg_path: Path to ffmpeg directory
+        
+    Returns:
+        Duration in seconds as float, or None if failed
+    """
+    # Try multiple locations for ffprobe
+    possible_paths = [
+        os.path.join(ffmpeg_path, 'ffprobe'),  # Local ffmpeg directory
+        '/opt/homebrew/bin/ffprobe',           # Homebrew on Apple Silicon
+        '/usr/local/bin/ffprobe',              # Homebrew on Intel Mac
+        'ffprobe'                              # System PATH
+    ]
+    
+    ffprobe_path = None
+    for path in possible_paths:
+        if os.path.exists(path) or path == 'ffprobe':
+            ffprobe_path = path
+            break
+    
+    if not ffprobe_path:
+        ffprobe_path = 'ffprobe'  # Fallback
+    
+    try:
+        cmd = [
+            ffprobe_path,
+            '-v', 'quiet',
+            '-print_format', 'json',
+            '-show_format',
+            file_path
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode == 0:
+            data = json.loads(result.stdout)
+            duration = float(data['format']['duration'])
+            return duration
+    except Exception as e:
+        print(f"Error getting audio duration: {e}")
+    return None
+
+def split_audio_file(file_path, ffmpeg_path, chunk_duration_minutes=35):
+    """
+    Split an audio file into chunks of specified duration.
+    
+    Args:
+        file_path: Path to the input audio file
+        ffmpeg_path: Path to ffmpeg directory
+        chunk_duration_minutes: Duration of each chunk in minutes
+        
+    Returns:
+        List of created chunk file paths
+    """
+    # Try multiple locations for ffmpeg
+    possible_paths = [
+        os.path.join(ffmpeg_path, 'ffmpeg'),   # Local ffmpeg directory
+        '/opt/homebrew/bin/ffmpeg',            # Homebrew on Apple Silicon
+        '/usr/local/bin/ffmpeg',               # Homebrew on Intel Mac
+        'ffmpeg'                               # System PATH
+    ]
+    
+    ffmpeg_exe = None
+    for path in possible_paths:
+        if os.path.exists(path) or path == 'ffmpeg':
+            ffmpeg_exe = path
+            break
+    
+    if not ffmpeg_exe:
+        ffmpeg_exe = 'ffmpeg'  # Fallback
+    
+    # Get audio duration
+    total_duration = get_audio_duration(file_path, ffmpeg_path)
+    if total_duration is None:
+        print("Could not determine audio duration. Skipping split.")
+        return [file_path]
+    
+    chunk_duration_seconds = chunk_duration_minutes * 60
+    total_chunks = int(total_duration / chunk_duration_seconds) + (1 if total_duration % chunk_duration_seconds > 0 else 0)
+    
+    if total_chunks <= 1:
+        print(f"Audio duration ({total_duration/60:.1f} minutes) is less than {chunk_duration_minutes} minutes. No splitting needed.")
+        return [file_path]
+    
+    print(f"Splitting audio into {total_chunks} chunks of {chunk_duration_minutes} minutes each...")
+    
+    # Prepare file paths
+    base_path = os.path.splitext(file_path)[0]
+    base_name = os.path.basename(base_path)
+    output_dir = os.path.dirname(file_path)
+    
+    chunk_files = []
+    
+    for i in range(total_chunks):
+        start_time = i * chunk_duration_seconds
+        chunk_file = os.path.join(output_dir, f"{base_name}_part{i+1:02d}.mp3")
+        
+        cmd = [
+            ffmpeg_exe,
+            '-i', file_path,
+            '-ss', str(start_time),
+            '-t', str(chunk_duration_seconds),
+            '-c', 'copy',
+            '-avoid_negative_ts', 'make_zero',
+            chunk_file
+        ]
+        
+        try:
+            print(f"Creating part {i+1}/{total_chunks}...")
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode == 0:
+                chunk_files.append(chunk_file)
+                print(f"Created: {os.path.basename(chunk_file)}")
+            else:
+                print(f"Error creating chunk {i+1}: {result.stderr}")
+        except Exception as e:
+            print(f"Error splitting audio chunk {i+1}: {e}")
+    
+    if chunk_files:
+        # Remove the original file since we have chunks
+        try:
+            os.remove(file_path)
+            print(f"Removed original file: {os.path.basename(file_path)}")
+        except Exception as e:
+            print(f"Error removing original file: {e}")
+    
+    return chunk_files
+
+def download_video(url, output_path=None, quality='best', audio_only=True, split_audio=True):
     
     """
     Download a YouTube video and save it as an MP4 file.
@@ -20,6 +153,7 @@ def download_video(url, output_path=None, quality='best', audio_only=True):
         output_path: Directory to save the video (defaults to Downloads folder)
         quality: Video quality ('best', '1080p', '720p', '480p', etc.)
         audio_only: If True, download only the audio (as MP4)
+        split_audio: If True, split audio files into 35-minute chunks
     """
     try:
         import yt_dlp
@@ -115,6 +249,16 @@ def download_video(url, output_path=None, quality='best', audio_only=True):
         try:
             shutil.copy2(downloaded_file, final_path)
             print(f"Download complete! File saved as: {final_filename}")
+            
+            # Split audio file if requested and it's an MP3
+            if audio_only and split_audio and final_ext == 'mp3':
+                ffmpeg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ffmpeg')
+                chunk_files = split_audio_file(final_path, ffmpeg_path)
+                if len(chunk_files) > 1:
+                    print(f"Audio split into {len(chunk_files)} parts successfully!")
+                    for chunk in chunk_files:
+                        print(f"  - {os.path.basename(chunk)}")
+                        
         except Exception as e:
             print(f"Error copying file: {e}")
         
@@ -147,6 +291,8 @@ def main():
                         help='Download audio only (as MP4) - default behavior')
     parser.add_argument('-v', '--video', action='store_true', 
                         help='Download video (overrides default audio-only mode)')
+    parser.add_argument('--no-split', action='store_true',
+                        help='Do not split audio files into chunks')
     
     args = parser.parse_args()
     
@@ -162,7 +308,10 @@ def main():
     # If --video flag is used, override the default audio-only behavior
     audio_only = args.audio_only and not args.video
     
-    download_video(url, args.output, args.quality, audio_only)
+    # Determine if we should split audio
+    split_audio = not args.no_split
+    
+    download_video(url, args.output, args.quality, audio_only, split_audio)
 
 if __name__ == "__main__":
     main() 
