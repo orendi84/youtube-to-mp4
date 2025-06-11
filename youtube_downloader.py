@@ -10,7 +10,7 @@ def download_video(url, output_path=None, quality='best', audio_only=False):
     
     Args:
         url: YouTube video URL
-        output_path: Directory to save the video (defaults to current directory)
+        output_path: Directory to save the video (defaults to Downloads folder)
         quality: Video quality ('best', '1080p', '720p', '480p', etc.)
         audio_only: If True, download only the audio (as MP4)
     """
@@ -21,10 +21,11 @@ def download_video(url, output_path=None, quality='best', audio_only=False):
         os.system("pip install yt-dlp")
         import yt_dlp
     
-    if output_path:
-        os.makedirs(output_path, exist_ok=True)
-    else:
-        output_path = os.getcwd()
+    # Use macOS Downloads folder as default
+    if output_path is None:
+        output_path = os.path.expanduser("~/Downloads")
+    
+    os.makedirs(output_path, exist_ok=True)
     
     output_template = os.path.join(output_path, '%(title)s.%(ext)s')
     
@@ -57,13 +58,14 @@ def download_video(url, output_path=None, quality='best', audio_only=False):
     # Download the video or audio
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         print(f"Downloading from: {url}")
+        print(f"Target folder: {output_path}")
         ydl.download([url])
         print(f"Download complete! {'Audio' if audio_only else 'Video'} saved to {output_path}")
 
 def main():
     parser = argparse.ArgumentParser(description='Download YouTube videos as MP4 files (including audio-only)')
     parser.add_argument('url', help='YouTube video URL')
-    parser.add_argument('-o', '--output', help='Output directory (default: current directory)')
+    parser.add_argument('-o', '--output', help='Output directory (default: ~/Downloads)')
     parser.add_argument('-q', '--quality', default='best', 
                         help='Video quality (best, 1080p, 720p, 480p, 360p, 240p, 144p)')
     parser.add_argument('-a', '--audio-only', action='store_true', 
