@@ -12,7 +12,7 @@ def download_video(url, output_path=None, quality='best', audio_only=False):
         url: YouTube video URL
         output_path: Directory to save the video (defaults to current directory)
         quality: Video quality ('best', '1080p', '720p', '480p', etc.)
-        audio_only: If True, download only the audio
+        audio_only: If True, download only the audio (as MP4)
     """
     try:
         import yt_dlp
@@ -32,17 +32,13 @@ def download_video(url, output_path=None, quality='best', audio_only=False):
     if audio_only:
         ydl_opts = {
             'format': 'bestaudio/best',
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }],
+            'merge_output_format': 'mp4',  # Use MP4 for audio too
             'outtmpl': output_template,
             'quiet': False,
             'progress': True,
             'no_warnings': False,
         }
-        print("Audio-only mode: Downloading audio as MP3...")
+        print("Audio-only mode: Downloading audio as MP4...")
     else:
         ydl_opts = {
             'format': f'bestvideo[height<={quality[:-1]}]+bestaudio/best' if quality != 'best' else 'bestvideo+bestaudio/best',
@@ -65,13 +61,13 @@ def download_video(url, output_path=None, quality='best', audio_only=False):
         print(f"Download complete! {'Audio' if audio_only else 'Video'} saved to {output_path}")
 
 def main():
-    parser = argparse.ArgumentParser(description='Download YouTube videos as MP4 files or extract audio as MP3')
+    parser = argparse.ArgumentParser(description='Download YouTube videos as MP4 files (including audio-only)')
     parser.add_argument('url', help='YouTube video URL')
     parser.add_argument('-o', '--output', help='Output directory (default: current directory)')
     parser.add_argument('-q', '--quality', default='best', 
                         help='Video quality (best, 1080p, 720p, 480p, 360p, 240p, 144p)')
     parser.add_argument('-a', '--audio-only', action='store_true', 
-                        help='Download audio only (as MP3)')
+                        help='Download audio only (as MP4)')
     
     args = parser.parse_args()
     download_video(args.url, args.output, args.quality, args.audio_only)
