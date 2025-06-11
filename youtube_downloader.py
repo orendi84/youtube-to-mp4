@@ -56,9 +56,14 @@ def download_video(url, output_path=None, quality='best', audio_only=False):
         }
         print("Audio-only mode: Downloading audio...")
     else:
+        # Use single format to avoid ffmpeg requirement
+        if quality == 'best':
+            format_selector = 'best[ext=mp4]/best'
+        else:
+            format_selector = f'best[height<={quality[:-1]}][ext=mp4]/best[height<={quality[:-1]}]/best'
+        
         ydl_opts = {
-            'format': f'bestvideo[height<={quality[:-1]}]+bestaudio/best' if quality != 'best' else 'bestvideo+bestaudio/best',
-            'merge_output_format': 'mp4',
+            'format': format_selector,
             'outtmpl': output_template,
             'quiet': False,
             'progress': True,
@@ -115,9 +120,13 @@ def read_url_from_file():
     """Read YouTube URL from the default file if it exists."""
     if os.path.exists(DEFAULT_URL_FILE):
         with open(DEFAULT_URL_FILE, 'r') as f:
-            url = f.read().strip()
-            if url:
-                return url
+            for line in f:
+                line = line.strip()
+                # Skip empty lines and comments
+                if line and not line.startswith('#'):
+                    # Check if it looks like a URL
+                    if 'youtube.com' in line or 'youtu.be' in line:
+                        return line
     return None
 
 def main():
