@@ -8,7 +8,7 @@ A powerful Python tool to download YouTube videos as MP3 files with automatic sp
 - **✂️ Automatic MP3 splitting** - Long videos automatically split into 35-minute chunks
 - **📁 Smart file management** - Organized output with sequential naming (`part01.mp3`, `part02.mp3`, etc.)
 - **🔧 Flexible options** - Download video, audio-only, or disable splitting as needed
-- **🚀 Auto-dependency management** - Automatically installs required tools
+- **🔍 Auto FFmpeg detection** - Finds FFmpeg in Homebrew or system PATH
 - **💻 Cross-platform support** - Works on macOS, Linux, and Windows
 - **🎯 Multiple input methods** - URL from command line or `youtube_url.txt` file
 
@@ -57,7 +57,7 @@ python3 youtube_downloader.py "https://www.youtube.com/watch?v=VIDEO_ID" --no-sp
 
 #### Download video (MP4):
 ```bash
-python3 youtube_downloader.py "https://www.youtube.com/watch?v=VIDEO_ID" --video
+python3 youtube_downloader.py "https://www.youtube.com/watch?v=VIDEO_ID" --no-audio-only
 ```
 
 #### Custom output directory:
@@ -67,13 +67,21 @@ python3 youtube_downloader.py "https://www.youtube.com/watch?v=VIDEO_ID" -o ~/Do
 
 #### Video with quality option:
 ```bash
-python3 youtube_downloader.py "https://www.youtube.com/watch?v=VIDEO_ID" --video -q 1080p
+python3 youtube_downloader.py "https://www.youtube.com/watch?v=VIDEO_ID" --no-audio-only -q 1080p
+```
+
+#### Custom chunk size (e.g. 20-minute parts):
+```bash
+python3 youtube_downloader.py "https://www.youtube.com/watch?v=VIDEO_ID" --chunk-minutes 20
 ```
 
 ## 📋 Command Line Arguments
 
 ```
-usage: youtube_downloader.py [-h] [-o OUTPUT] [-q QUALITY] [-a] [-v] [--no-split] [url]
+usage: youtube_downloader.py [-h] [-o OUTPUT] [-q QUALITY]
+                             [--audio-only | --no-audio-only]
+                             [--no-split] [--chunk-minutes CHUNK_MINUTES]
+                             [-v] [--version] [url]
 
 positional arguments:
   url                   YouTube video URL
@@ -83,9 +91,12 @@ options:
   -o, --output OUTPUT   Output directory (default: ~/Downloads)
   -q, --quality QUALITY
                         Video quality (best, 1080p, 720p, 480p, 360p, 240p, 144p)
-  -a, --audio-only      Download audio only (as MP3) - default behavior
-  -v, --video           Download video (overrides default audio-only mode)
+  --audio-only, --no-audio-only
+                        Download audio as MP3 (default). Use --no-audio-only for video.
   --no-split            Do not split audio files into chunks
+  --chunk-minutes N     Chunk size in minutes when splitting (default: 35)
+  -v, --verbose         Verbose logging
+  --version             Show version and exit
 ```
 
 ## 🎵 MP3 Splitting Feature
