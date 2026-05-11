@@ -36,7 +36,7 @@ def find_binary(name: str) -> Optional[str]:
         f"/usr/local/bin/{name}",
     ]
     for path in candidates:
-        if os.path.exists(path):
+        if os.path.isfile(path) and os.access(path, os.X_OK):
             return path
     return shutil.which(name)
 
@@ -254,7 +254,7 @@ def read_url_from_file() -> Optional[str]:
     """Read the first non-comment YouTube URL from the default URL file."""
     if not DEFAULT_URL_FILE.exists():
         return None
-    for raw in DEFAULT_URL_FILE.read_text().splitlines():
+    for raw in DEFAULT_URL_FILE.read_text(encoding="utf-8", errors="replace").splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
             continue

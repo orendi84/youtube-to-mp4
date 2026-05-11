@@ -62,18 +62,39 @@ class TestFindBinary(unittest.TestCase):
         def fake_exists(p):
             return p == local_path
 
-        with mock.patch("youtube_downloader.os.path.exists", side_effect=fake_exists):
+        with mock.patch("youtube_downloader.os.path.isfile", side_effect=fake_exists), \
+             mock.patch("youtube_downloader.os.access", return_value=True):
             self.assertEqual(yd.find_binary("ffmpeg"), local_path)
 
     def test_falls_back_to_which(self):
-        with mock.patch("youtube_downloader.os.path.exists", return_value=False), \
+        with mock.patch("youtube_downloader.os.path.isfile", return_value=False), \
              mock.patch("youtube_downloader.shutil.which", return_value="/fake/bin/ffmpeg"):
             self.assertEqual(yd.find_binary("ffmpeg"), "/fake/bin/ffmpeg")
 
     def test_returns_none_when_missing(self):
-        with mock.patch("youtube_downloader.os.path.exists", return_value=False), \
+        with mock.patch("youtube_downloader.os.path.isfile", return_value=False), \
              mock.patch("youtube_downloader.shutil.which", return_value=None):
             self.assertIsNone(yd.find_binary("ffmpeg"))
+
+    def test_skips_non_executable_file(self):
+        """A local file that exists but isn't executable must be skipped (not picked then crash later)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            non_exec = Path(tmp) / "ffmpeg"
+            non_exec.write_text("# not actually ffmpeg")
+            non_exec.chmod(0o644)  # readable, NOT executable
+
+            def fake_isfile(p):
+                return p == str(non_exec)
+
+            def fake_access(p, mode):
+                # Only the real non-executable file we created exists; never executable.
+                return False
+
+            with mock.patch("youtube_downloader.os.path.isfile", side_effect=fake_isfile), \
+                 mock.patch("youtube_downloader.os.access", side_effect=fake_access), \
+                 mock.patch("youtube_downloader.shutil.which", return_value="/usr/bin/ffmpeg"):
+                # Should NOT return the non-executable local file; should fall through to which()
+                self.assertEqual(yd.find_binary("ffmpeg"), "/usr/bin/ffmpeg")
 
 
 class TestReadUrlFromFile(unittest.TestCase):
@@ -98,6 +119,17 @@ class TestReadUrlFromFile(unittest.TestCase):
             path.write_text("# only comments\n\n# another comment\n")
             with mock.patch.object(yd, "DEFAULT_URL_FILE", path):
                 self.assertIsNone(yd.read_url_from_file())
+
+    def test_tolerates_non_utf8_bytes(self):
+        """A stray non-UTF-8 byte must not crash; the URL on a clean line is still picked up."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "youtube_url.txt"
+            path.write_bytes(b"# smart-quoted intro \x93garbled\x94\nhttps://www.youtube.com/watch?v=abc\n")
+            with mock.patch.object(yd, "DEFAULT_URL_FILE", path):
+                self.assertEqual(
+                    yd.read_url_from_file(),
+                    "https://www.youtube.com/watch?v=abc",
+                )
 
 
 class TestSplitAudioFile(unittest.TestCase):
@@ -234,6 +266,68 @@ class TestDownloadExtensionHandling(unittest.TestCase):
         result = self._run_with_fake_ytdlp(produced_ext="mp3", audio_only=True)
         self.assertIsNotNone(result)
         self.assertEqual(result.suffix, ".mp3")
+
+    def test_audio_mode_uses_correct_format_and_calls_split(self):
+        """Audio path: ydl_opts['format']='bestaudio/best', split_audio_file called with known_duration."""
+        import yt_dlp as real_yt_dlp
+
+        captured_opts = []
+        split_calls = []
+
+        class FakeYDL:
+            def __init__(self, opts):
+                captured_opts.append(opts)
+                self.opts = opts
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def extract_info(self, url, download):
+                tmp_dir = os.path.dirname(self.opts["outtmpl"])
+                Path(os.path.join(tmp_dir, "download.mp3")).touch()
+                return {"title": "Audio Test", "duration": 4200}
+
+        fake_yt_dlp = mock.MagicMock()
+        fake_yt_dlp.YoutubeDL = FakeYDL
+        fake_yt_dlp.utils.sanitize_filename = real_yt_dlp.utils.sanitize_filename
+        fake_yt_dlp.utils.DownloadError = real_yt_dlp.utils.DownloadError
+
+        def fake_split(file_path, chunk_minutes=35, known_duration=None):
+            split_calls.append({
+                "file_path": file_path,
+                "chunk_minutes": chunk_minutes,
+                "known_duration": known_duration,
+            })
+            return [file_path]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict(sys.modules, {"yt_dlp": fake_yt_dlp}), \
+                 mock.patch.object(yd, "find_binary", return_value="/fake/ffmpeg"), \
+                 mock.patch.object(yd, "split_audio_file", side_effect=fake_split):
+                result = yd.download(
+                    url="https://fake.invalid/v",
+                    output_dir=tmp,
+                    audio_only=True,
+                    split=True,
+                    chunk_minutes=35,
+                )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.suffix, ".mp3")
+        self.assertEqual(captured_opts[0]["format"], "bestaudio/best")
+        self.assertEqual(len(split_calls), 1)
+        self.assertEqual(split_calls[0]["known_duration"], 4200)
+        self.assertEqual(split_calls[0]["chunk_minutes"], 35)
+
+    def test_video_mode_does_not_call_split(self):
+        split_calls = []
+        with mock.patch.object(yd, "split_audio_file", side_effect=lambda *a, **k: split_calls.append(1)):
+            result = self._run_with_fake_ytdlp(produced_ext="mp4", audio_only=False, quality="720p")
+        self.assertIsNotNone(result)
+        self.assertEqual(split_calls, [])
 
 
 class TestMain(unittest.TestCase):
