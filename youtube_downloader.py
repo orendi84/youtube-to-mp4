@@ -52,11 +52,15 @@ def get_audio_duration(file_path: str) -> Optional[float]:
             [ffprobe, "-v", "quiet", "-print_format", "json", "-show_format", file_path],
             capture_output=True,
             text=True,
+            timeout=60,
         )
         if result.returncode != 0:
             log.debug("ffprobe exited %d: %s", result.returncode, result.stderr)
             return None
         return float(json.loads(result.stdout)["format"]["duration"])
+    except subprocess.TimeoutExpired:
+        log.warning("ffprobe timed out after 60s on %s", file_path)
+        return None
     except (json.JSONDecodeError, KeyError, ValueError) as exc:
         log.debug("Could not parse ffprobe output: %s", exc)
         return None
@@ -112,7 +116,12 @@ def split_audio_file(
             chunk_path,
         ]
         log.info("Creating part %d/%d", i + 1, total_chunks)
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        except subprocess.TimeoutExpired:
+            log.error("ffmpeg chunk %d timed out after 600s; aborting split", i + 1)
+            Path(chunk_path).unlink(missing_ok=True)
+            break
         if result.returncode == 0:
             chunks.append(chunk_path)
             log.info("Created: %s", os.path.basename(chunk_path))

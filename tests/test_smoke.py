@@ -213,6 +213,38 @@ class TestSplitAudioFile(unittest.TestCase):
             chunks = yd.split_audio_file("/tmp/fake.mp3", known_duration=99 * 60)
         self.assertEqual(chunks, ["/tmp/fake.mp3"])
 
+    def test_ffprobe_timeout_returns_none(self):
+        """If ffprobe hangs and TimeoutExpired fires, get_audio_duration returns None."""
+        def fake_run(cmd, *args, **kwargs):
+            raise yd.subprocess.TimeoutExpired(cmd=cmd, timeout=kwargs.get("timeout", 60))
+
+        with mock.patch.object(yd, "find_binary", return_value="/fake/ffprobe"), \
+             mock.patch.object(yd.subprocess, "run", side_effect=fake_run):
+            self.assertIsNone(yd.get_audio_duration("/tmp/fake.mp3"))
+
+    def test_ffmpeg_chunk_timeout_aborts_split_preserves_original(self):
+        """First chunk times out -> exactly 1 subprocess call, original kept, returns [file_path]."""
+        run_calls = []
+        remove_calls = []
+
+        def fake_run(cmd, *args, **kwargs):
+            run_calls.append(cmd)
+            raise yd.subprocess.TimeoutExpired(cmd=cmd, timeout=kwargs.get("timeout", 600))
+
+        with mock.patch.object(yd, "find_binary", return_value="/fake/ffmpeg"), \
+             mock.patch.object(yd.subprocess, "run", side_effect=fake_run), \
+             mock.patch.object(yd.os, "remove", side_effect=lambda p: remove_calls.append(p)):
+            chunks = yd.split_audio_file(
+                "/tmp/fake.mp3",
+                chunk_minutes=35,
+                known_duration=5 * 35 * 60,  # 5 chunks worth
+            )
+
+        self.assertEqual(len(run_calls), 1)  # aborted on first timeout, no continuation
+        self.assertEqual(remove_calls, [])  # original NOT removed
+        # Zero chunks succeeded -> contract fix returns [file_path]
+        self.assertEqual(chunks, ["/tmp/fake.mp3"])
+
     def test_all_chunks_fail_returns_original_path_not_empty_list(self):
         """Contract fix: when every chunk's ffmpeg call fails, return [file_path], NOT []."""
         remove_calls = []
