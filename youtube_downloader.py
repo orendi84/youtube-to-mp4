@@ -103,8 +103,8 @@ def split_audio_file(
         chunk_path = str(base.with_name(f"{base.stem}_part{i+1:02d}{base.suffix}"))
         cmd = [
             ffmpeg,
-            "-i", file_path,
             "-ss", str(start),
+            "-i", file_path,
             "-t", str(chunk_seconds),
             "-c", "copy",
             "-avoid_negative_ts", "make_zero",
@@ -119,13 +119,16 @@ def split_audio_file(
         else:
             log.error("Failed chunk %d: %s", i + 1, result.stderr.strip())
 
+    if not chunks:
+        log.warning("All chunks failed; keeping original at %s", file_path)
+        return [file_path]
     if len(chunks) == total_chunks:
         try:
             os.remove(file_path)
             log.info("Removed original: %s", os.path.basename(file_path))
         except OSError as exc:
             log.warning("Could not remove original: %s", exc)
-    elif chunks:
+    else:
         log.warning(
             "Only %d/%d chunks succeeded; keeping original at %s",
             len(chunks), total_chunks, file_path,

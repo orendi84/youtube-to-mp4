@@ -155,6 +155,9 @@ class TestSplitAudioFile(unittest.TestCase):
         for cmd in captured_cmds:
             self.assertIn("-t", cmd)
             self.assertEqual(cmd[cmd.index("-t") + 1], "1200")
+        # Perf-1: -ss must come BEFORE -i (input seeking, not output seeking)
+        # for at least one chunk so ffmpeg seeks at file level (O(N) total work).
+        self.assertTrue(any(cmd.index("-ss") < cmd.index("-i") for cmd in captured_cmds))
 
     def test_partial_failure_keeps_original(self):
         """If any chunk fails, the original file must NOT be deleted (data loss)."""
@@ -209,6 +212,25 @@ class TestSplitAudioFile(unittest.TestCase):
         with mock.patch.object(yd, "find_binary", return_value=None):
             chunks = yd.split_audio_file("/tmp/fake.mp3", known_duration=99 * 60)
         self.assertEqual(chunks, ["/tmp/fake.mp3"])
+
+    def test_all_chunks_fail_returns_original_path_not_empty_list(self):
+        """Contract fix: when every chunk's ffmpeg call fails, return [file_path], NOT []."""
+        remove_calls = []
+
+        def fake_run(cmd, *args, **kwargs):
+            return mock.Mock(returncode=1, stderr="ffmpeg error")
+
+        with mock.patch.object(yd, "find_binary", return_value="/fake/ffmpeg"), \
+             mock.patch.object(yd.subprocess, "run", side_effect=fake_run), \
+             mock.patch.object(yd.os, "remove", side_effect=lambda p: remove_calls.append(p)):
+            chunks = yd.split_audio_file(
+                "/tmp/fake.mp3",
+                chunk_minutes=35,
+                known_duration=80 * 60,  # 80 min -> 3 chunks expected
+            )
+
+        self.assertEqual(chunks, ["/tmp/fake.mp3"])
+        self.assertEqual(remove_calls, [])  # original NOT removed
 
 
 class TestDownloadExtensionHandling(unittest.TestCase):
