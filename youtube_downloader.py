@@ -228,9 +228,12 @@ def download(
                 final_ext, actual_ext, actual_ext,
             )
         final_path = out / f"{title}.{actual_ext}"
-        if final_path.exists():
-            import time
-            final_path = out / f"{title}_{int(time.time())}.{actual_ext}"
+        suffix = 1
+        candidate = final_path
+        while candidate.exists():
+            candidate = out / f"{title}_{suffix}.{actual_ext}"
+            suffix += 1
+        final_path = candidate
 
         shutil.move(downloaded, final_path)
         log.info("Saved: %s", final_path.name)

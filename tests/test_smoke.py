@@ -352,6 +352,105 @@ class TestDownloadExtensionHandling(unittest.TestCase):
         self.assertEqual(split_calls, [])
 
 
+class TestDownloadCollisionAndMissingFile(unittest.TestCase):
+    """Coverage for download()'s collision suffix branch and the no-matching-file branch."""
+
+    def _make_fake_yt_dlp(self, produced_ext: str = "mp3", title: str = "Test Video"):
+        import yt_dlp as real_yt_dlp
+
+        class FakeYDL:
+            def __init__(self, opts):
+                self.opts = opts
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def extract_info(self, url, download):
+                tmp_dir = os.path.dirname(self.opts["outtmpl"])
+                Path(os.path.join(tmp_dir, f"download.{produced_ext}")).touch()
+                return {"title": title, "duration": 60}
+
+        fake = mock.MagicMock()
+        fake.YoutubeDL = FakeYDL
+        fake.utils.sanitize_filename = real_yt_dlp.utils.sanitize_filename
+        fake.utils.DownloadError = real_yt_dlp.utils.DownloadError
+        return fake
+
+    def test_collision_appends_counter_suffix(self):
+        """If Test_Video.mp3 exists, downloaded file lands at Test_Video_1.mp3."""
+        fake_yt_dlp = self._make_fake_yt_dlp(produced_ext="mp3", title="Test Video")
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            (out / "Test_Video.mp3").write_text("pre-existing")
+            with mock.patch.dict(sys.modules, {"yt_dlp": fake_yt_dlp}), \
+                 mock.patch.object(yd, "find_binary", return_value="/fake/ffmpeg"):
+                result = yd.download(
+                    url="https://fake.invalid/v",
+                    output_dir=str(out),
+                    audio_only=True,
+                    split=False,
+                )
+            self.assertIsNotNone(result)
+            self.assertEqual(result.name, "Test_Video_1.mp3")
+            self.assertTrue(result.exists())
+
+    def test_double_collision_increments_counter(self):
+        """If Test_Video.mp3 and Test_Video_1.mp3 both exist, lands at Test_Video_2.mp3."""
+        fake_yt_dlp = self._make_fake_yt_dlp(produced_ext="mp3", title="Test Video")
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            (out / "Test_Video.mp3").write_text("pre-existing-a")
+            (out / "Test_Video_1.mp3").write_text("pre-existing-b")
+            with mock.patch.dict(sys.modules, {"yt_dlp": fake_yt_dlp}), \
+                 mock.patch.object(yd, "find_binary", return_value="/fake/ffmpeg"):
+                result = yd.download(
+                    url="https://fake.invalid/v",
+                    output_dir=str(out),
+                    audio_only=True,
+                    split=False,
+                )
+            self.assertIsNotNone(result)
+            self.assertEqual(result.name, "Test_Video_2.mp3")
+            self.assertTrue(result.exists())
+
+    def test_no_matching_file_in_temp_dir_returns_none(self):
+        """FakeYDL succeeds but produces no download.* file — download() must return None."""
+        import yt_dlp as real_yt_dlp
+
+        class EmptyFakeYDL:
+            def __init__(self, opts):
+                self.opts = opts
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def extract_info(self, url, download):
+                # Note: do NOT create any download.* file in temp_dir.
+                return {"title": "Nothing", "duration": 30}
+
+        fake = mock.MagicMock()
+        fake.YoutubeDL = EmptyFakeYDL
+        fake.utils.sanitize_filename = real_yt_dlp.utils.sanitize_filename
+        fake.utils.DownloadError = real_yt_dlp.utils.DownloadError
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict(sys.modules, {"yt_dlp": fake}), \
+                 mock.patch.object(yd, "find_binary", return_value="/fake/ffmpeg"):
+                result = yd.download(
+                    url="https://fake.invalid/v",
+                    output_dir=tmp,
+                    audio_only=True,
+                    split=False,
+                )
+            self.assertIsNone(result)
+
+
 class TestMain(unittest.TestCase):
     def test_returns_2_when_no_url(self):
         with mock.patch.object(sys, "argv", ["youtube_downloader.py"]), \
