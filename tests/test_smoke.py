@@ -467,7 +467,9 @@ class TestDownloadBotChallengeRetry(unittest.TestCase):
         self.assertNotIn("download.part", snapshots[1])
 
     def test_video_mode_non_bot_error_does_not_retry(self):
-        """A non-bot DownloadError must NOT trigger our retry."""
+        """A non-bot DownloadError must NOT trigger our retry, but must log
+        actionable next-step guidance (plan lines 39-42)."""
+        import logging as _logging
         import yt_dlp as real_yt_dlp
 
         def only_attempt(opts, tmp_dir):
@@ -477,7 +479,8 @@ class TestDownloadBotChallengeRetry(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.dict(sys.modules, {"yt_dlp": fake}), \
-                 mock.patch.object(yd, "find_binary", return_value="/fake/ffmpeg"):
+                 mock.patch.object(yd, "find_binary", return_value="/fake/ffmpeg"), \
+                 self.assertLogs("yt2mp3", level=_logging.ERROR) as captured_logs:
                 result = yd.download(
                     url="https://fake.invalid/v",
                     output_dir=tmp,
@@ -487,6 +490,11 @@ class TestDownloadBotChallengeRetry(unittest.TestCase):
 
         self.assertIsNone(result)
         self.assertEqual(len(captured_opts), 1)
+        # Actionable next-step guidance must appear on the non-bot path,
+        # mirroring the retry-failure path's user-facing log.
+        joined = "\n".join(captured_logs.output)
+        self.assertIn("Download failed", joined)
+        self.assertIn("yt-dlp", joined)
 
     def test_video_mode_http_429_does_not_retry(self):
         """HTTP 429 is a rate-limit, not a bot-challenge. yt-dlp's internal

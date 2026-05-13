@@ -257,7 +257,12 @@ def download(
                     )
                     return None
             else:
-                log.error("Download failed: %s", exc)
+                log.error(
+                    "Download failed: %s. The URL may be invalid, the video "
+                    "may be unavailable or region-restricted, or yt-dlp may "
+                    "need updating (pip install -U yt-dlp).",
+                    exc,
+                )
                 return None
 
         raw_title = info.get("title") or "download"

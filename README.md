@@ -15,7 +15,7 @@ A powerful Python tool to download YouTube videos as MP3 files with automatic sp
 ## 🛠 Installation
 
 ### Prerequisites
-- Python 3.6+
+- Python 3.10+ (CI tests 3.10, 3.11, 3.12)
 - FFmpeg (automatically detected or can be installed via Homebrew on macOS)
 
 ### Setup
