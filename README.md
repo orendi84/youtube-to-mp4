@@ -9,13 +9,13 @@ A powerful Python tool to download YouTube videos as MP3 files with automatic sp
 - **📁 Smart file management** - Organized output with sequential naming (`part01.mp3`, `part02.mp3`, etc.)
 - **🔧 Flexible options** - Download video, audio-only, or disable splitting as needed
 - **🔍 Auto FFmpeg detection** - Finds FFmpeg in Homebrew or system PATH
-- **💻 Cross-platform support** - Works on macOS, Linux, and Windows
+- **💻 Tested on macOS (Apple Silicon + Intel). Linux likely works via PATH; Windows local-bundled ffmpeg path will not.**
 - **🎯 Multiple input methods** - URL from command line or `youtube_url.txt` file
 
 ## 🛠 Installation
 
 ### Prerequisites
-- Python 3.6+
+- Python 3.10+ (CI tests 3.10, 3.11, 3.12)
 - FFmpeg (automatically detected or can be installed via Homebrew on macOS)
 
 ### Setup
@@ -34,6 +34,8 @@ pip install -r requirements.txt
 ```bash
 brew install ffmpeg
 ```
+
+Windows users: install ffmpeg into PATH (e.g., via winget). The bundled `./ffmpeg/` directory is macOS/Linux only.
 
 ## 🚀 Usage
 

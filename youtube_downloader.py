@@ -24,6 +24,15 @@ DEFAULT_URL_FILE = Path(__file__).resolve().parent / "youtube_url.txt"
 
 log = logging.getLogger("yt2mp3")
 
+# yt-dlp message substring for the YouTube bot-challenge. NOTE: this is
+# fragile by design — yt-dlp's error text can shift between releases. When
+# bumping the yt-dlp pin in requirements.txt, re-verify this substring still
+# appears in the upstream extractor error. HTTP 429 is explicitly NOT a
+# bot-challenge — it's a rate limit and yt-dlp's built-in retries=5 handles it.
+BOT_CHALLENGE_MARKERS = (
+    "Sign in to confirm you're not a bot",
+)
+
 
 # --- helpers ---------------------------------------------------------------
 
@@ -52,11 +61,15 @@ def get_audio_duration(file_path: str) -> Optional[float]:
             [ffprobe, "-v", "quiet", "-print_format", "json", "-show_format", file_path],
             capture_output=True,
             text=True,
+            timeout=60,
         )
         if result.returncode != 0:
             log.debug("ffprobe exited %d: %s", result.returncode, result.stderr)
             return None
         return float(json.loads(result.stdout)["format"]["duration"])
+    except subprocess.TimeoutExpired:
+        log.warning("ffprobe timed out after 60s on %s", file_path)
+        return None
     except (json.JSONDecodeError, KeyError, ValueError) as exc:
         log.debug("Could not parse ffprobe output: %s", exc)
         return None
@@ -103,8 +116,8 @@ def split_audio_file(
         chunk_path = str(base.with_name(f"{base.stem}_part{i+1:02d}{base.suffix}"))
         cmd = [
             ffmpeg,
-            "-i", file_path,
             "-ss", str(start),
+            "-i", file_path,
             "-t", str(chunk_seconds),
             "-c", "copy",
             "-avoid_negative_ts", "make_zero",
@@ -112,20 +125,28 @@ def split_audio_file(
             chunk_path,
         ]
         log.info("Creating part %d/%d", i + 1, total_chunks)
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        except subprocess.TimeoutExpired:
+            log.error("ffmpeg chunk %d timed out after 600s; aborting split", i + 1)
+            Path(chunk_path).unlink(missing_ok=True)
+            break
         if result.returncode == 0:
             chunks.append(chunk_path)
             log.info("Created: %s", os.path.basename(chunk_path))
         else:
             log.error("Failed chunk %d: %s", i + 1, result.stderr.strip())
 
+    if not chunks:
+        log.warning("All chunks failed; keeping original at %s", file_path)
+        return [file_path]
     if len(chunks) == total_chunks:
         try:
             os.remove(file_path)
             log.info("Removed original: %s", os.path.basename(file_path))
         except OSError as exc:
             log.warning("Could not remove original: %s", exc)
-    elif chunks:
+    else:
         log.warning(
             "Only %d/%d chunks succeeded; keeping original at %s",
             len(chunks), total_chunks, file_path,
@@ -192,15 +213,57 @@ def download(
         ydl_opts = {**common_opts, "format": select_format(quality)}
         log.info("Video mode: quality=%s", quality)
 
-    try:
+    def _try_extract(opts):
+        """Run yt-dlp once. Returns (info, error). info is None on failure."""
         try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            with yt_dlp.YoutubeDL(opts) as ydl:
                 log.info("Downloading from: %s", url)
                 log.info("Target folder: %s", out)
-                info = ydl.extract_info(url, download=True)
+                return ydl.extract_info(url, download=True), None
         except yt_dlp.utils.DownloadError as exc:
-            log.error("Download failed: %s", exc)
-            return None
+            return None, exc
+
+    def _is_bot_challenge(exc) -> bool:
+        """Return True iff exc looks like a YouTube bot-challenge (not 429, not generic)."""
+        msg = str(exc)
+        return any(marker in msg for marker in BOT_CHALLENGE_MARKERS)
+
+    def _reset_temp_dir():
+        """Nuke and recreate temp_dir between retry attempts. More robust than
+        an allowlist: yt-dlp can leave .part, .ytdl, .info.json, .tmp, partial
+        .webm/.m4a, and fragment artifacts. The set drifts as yt-dlp evolves."""
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        temp_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        info, exc = _try_extract(ydl_opts)
+        if info is None:
+            if _is_bot_challenge(exc):
+                log.warning(
+                    "YouTube bot-challenge detected; retrying once with player_client=android_vr"
+                )
+                _reset_temp_dir()
+                retry_opts = {
+                    **ydl_opts,
+                    "extractor_args": {"youtube": {"player_client": ["android_vr"]}},
+                }
+                info, exc = _try_extract(retry_opts)
+                if info is None:
+                    log.error(
+                        "Bot-challenge retry with android_vr also failed: %s. "
+                        "The YouTube anti-bot fingerprint may have changed; "
+                        "check yt-dlp issues and consider bumping the yt-dlp pin.",
+                        exc,
+                    )
+                    return None
+            else:
+                log.error(
+                    "Download failed: %s. The URL may be invalid, the video "
+                    "may be unavailable or region-restricted, or yt-dlp may "
+                    "need updating (pip install -U yt-dlp).",
+                    exc,
+                )
+                return None
 
         raw_title = info.get("title") or "download"
         title = yt_dlp.utils.sanitize_filename(raw_title, restricted=True) or "download"
@@ -225,9 +288,12 @@ def download(
                 final_ext, actual_ext, actual_ext,
             )
         final_path = out / f"{title}.{actual_ext}"
-        if final_path.exists():
-            import time
-            final_path = out / f"{title}_{int(time.time())}.{actual_ext}"
+        suffix = 1
+        candidate = final_path
+        while candidate.exists():
+            candidate = out / f"{title}_{suffix}.{actual_ext}"
+            suffix += 1
+        final_path = candidate
 
         shutil.move(downloaded, final_path)
         log.info("Saved: %s", final_path.name)

@@ -155,6 +155,9 @@ class TestSplitAudioFile(unittest.TestCase):
         for cmd in captured_cmds:
             self.assertIn("-t", cmd)
             self.assertEqual(cmd[cmd.index("-t") + 1], "1200")
+        # Perf-1: -ss must come BEFORE -i (input seeking, not output seeking)
+        # for at least one chunk so ffmpeg seeks at file level (O(N) total work).
+        self.assertTrue(any(cmd.index("-ss") < cmd.index("-i") for cmd in captured_cmds))
 
     def test_partial_failure_keeps_original(self):
         """If any chunk fails, the original file must NOT be deleted (data loss)."""
@@ -209,6 +212,57 @@ class TestSplitAudioFile(unittest.TestCase):
         with mock.patch.object(yd, "find_binary", return_value=None):
             chunks = yd.split_audio_file("/tmp/fake.mp3", known_duration=99 * 60)
         self.assertEqual(chunks, ["/tmp/fake.mp3"])
+
+    def test_ffprobe_timeout_returns_none(self):
+        """If ffprobe hangs and TimeoutExpired fires, get_audio_duration returns None."""
+        def fake_run(cmd, *args, **kwargs):
+            raise yd.subprocess.TimeoutExpired(cmd=cmd, timeout=kwargs.get("timeout", 60))
+
+        with mock.patch.object(yd, "find_binary", return_value="/fake/ffprobe"), \
+             mock.patch.object(yd.subprocess, "run", side_effect=fake_run):
+            self.assertIsNone(yd.get_audio_duration("/tmp/fake.mp3"))
+
+    def test_ffmpeg_chunk_timeout_aborts_split_preserves_original(self):
+        """First chunk times out -> exactly 1 subprocess call, original kept, returns [file_path]."""
+        run_calls = []
+        remove_calls = []
+
+        def fake_run(cmd, *args, **kwargs):
+            run_calls.append(cmd)
+            raise yd.subprocess.TimeoutExpired(cmd=cmd, timeout=kwargs.get("timeout", 600))
+
+        with mock.patch.object(yd, "find_binary", return_value="/fake/ffmpeg"), \
+             mock.patch.object(yd.subprocess, "run", side_effect=fake_run), \
+             mock.patch.object(yd.os, "remove", side_effect=lambda p: remove_calls.append(p)):
+            chunks = yd.split_audio_file(
+                "/tmp/fake.mp3",
+                chunk_minutes=35,
+                known_duration=5 * 35 * 60,  # 5 chunks worth
+            )
+
+        self.assertEqual(len(run_calls), 1)  # aborted on first timeout, no continuation
+        self.assertEqual(remove_calls, [])  # original NOT removed
+        # Zero chunks succeeded -> contract fix returns [file_path]
+        self.assertEqual(chunks, ["/tmp/fake.mp3"])
+
+    def test_all_chunks_fail_returns_original_path_not_empty_list(self):
+        """Contract fix: when every chunk's ffmpeg call fails, return [file_path], NOT []."""
+        remove_calls = []
+
+        def fake_run(cmd, *args, **kwargs):
+            return mock.Mock(returncode=1, stderr="ffmpeg error")
+
+        with mock.patch.object(yd, "find_binary", return_value="/fake/ffmpeg"), \
+             mock.patch.object(yd.subprocess, "run", side_effect=fake_run), \
+             mock.patch.object(yd.os, "remove", side_effect=lambda p: remove_calls.append(p)):
+            chunks = yd.split_audio_file(
+                "/tmp/fake.mp3",
+                chunk_minutes=35,
+                known_duration=80 * 60,  # 80 min -> 3 chunks expected
+            )
+
+        self.assertEqual(chunks, ["/tmp/fake.mp3"])
+        self.assertEqual(remove_calls, [])  # original NOT removed
 
 
 class TestDownloadExtensionHandling(unittest.TestCase):
@@ -328,6 +382,294 @@ class TestDownloadExtensionHandling(unittest.TestCase):
             result = self._run_with_fake_ytdlp(produced_ext="mp4", audio_only=False, quality="720p")
         self.assertIsNotNone(result)
         self.assertEqual(split_calls, [])
+
+
+class TestDownloadBotChallengeRetry(unittest.TestCase):
+    """A1: detect YouTube bot-challenge DownloadError and retry once with android_vr."""
+
+    def _build_fake_yt_dlp(self, behaviors):
+        """behaviors: list of callables(opts, tmp_dir) -> info dict OR raises DownloadError.
+        FakeYDL pops from the front on each instantiation."""
+        import yt_dlp as real_yt_dlp
+
+        captured_opts = []
+        artifacts_seen_per_attempt = []
+
+        class FakeYDL:
+            def __init__(self, opts):
+                captured_opts.append(opts)
+                self.opts = opts
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def extract_info(self, url, download):
+                tmp_dir = os.path.dirname(self.opts["outtmpl"])
+                # Snapshot of temp_dir contents BEFORE this attempt runs;
+                # tests use this to verify whether artifacts from a prior
+                # attempt survived (they must NOT, after _reset_temp_dir).
+                artifacts_seen_per_attempt.append(sorted(os.listdir(tmp_dir)))
+                behavior = behaviors[len(captured_opts) - 1]
+                return behavior(self.opts, tmp_dir)
+
+        fake = mock.MagicMock()
+        fake.YoutubeDL = FakeYDL
+        fake.utils.sanitize_filename = real_yt_dlp.utils.sanitize_filename
+        fake.utils.DownloadError = real_yt_dlp.utils.DownloadError
+        return fake, captured_opts, artifacts_seen_per_attempt
+
+    def test_video_mode_bot_challenge_triggers_retry_with_android_vr(self):
+        """Bot-challenge on first attempt -> retry with android_vr, temp_dir reset, succeeds."""
+        import yt_dlp as real_yt_dlp
+
+        def first_attempt(opts, tmp_dir):
+            # Pre-seed a fake yt-dlp partial artifact, then raise bot-challenge.
+            Path(os.path.join(tmp_dir, "download.part")).write_text("partial garbage")
+            raise real_yt_dlp.utils.DownloadError(
+                "ERROR: [youtube] Sign in to confirm you're not a bot"
+            )
+
+        def second_attempt(opts, tmp_dir):
+            Path(os.path.join(tmp_dir, "download.mp4")).touch()
+            return {"title": "Recovered", "duration": 90}
+
+        fake, captured_opts, snapshots = self._build_fake_yt_dlp([first_attempt, second_attempt])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict(sys.modules, {"yt_dlp": fake}), \
+                 mock.patch.object(yd, "find_binary", return_value="/fake/ffmpeg"):
+                result = yd.download(
+                    url="https://fake.invalid/v",
+                    output_dir=tmp,
+                    audio_only=False,
+                    split=False,
+                    quality="720p",
+                )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(len(captured_opts), 2)  # exactly two attempts
+        # First call must NOT carry extractor_args (defaults).
+        self.assertNotIn("extractor_args", captured_opts[0])
+        # Second call must request android_vr as a single-element list.
+        self.assertEqual(
+            captured_opts[1]["extractor_args"],
+            {"youtube": {"player_client": ["android_vr"]}},
+        )
+        # temp_dir must have been nuked between attempts: the .part seeded
+        # by attempt 1 (after its snapshot was taken) must NOT be present
+        # in attempt 2's start-of-attempt snapshot. snapshots[0] is the
+        # pre-attempt-1 state (empty); snapshots[1] is the pre-attempt-2
+        # state and must NOT contain the seeded artifact.
+        self.assertEqual(snapshots[0], [])
+        self.assertNotIn("download.part", snapshots[1])
+
+    def test_video_mode_non_bot_error_does_not_retry(self):
+        """A non-bot DownloadError must NOT trigger our retry, but must log
+        actionable next-step guidance (plan lines 39-42)."""
+        import logging as _logging
+        import yt_dlp as real_yt_dlp
+
+        def only_attempt(opts, tmp_dir):
+            raise real_yt_dlp.utils.DownloadError("ERROR: Video unavailable")
+
+        fake, captured_opts, _ = self._build_fake_yt_dlp([only_attempt])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict(sys.modules, {"yt_dlp": fake}), \
+                 mock.patch.object(yd, "find_binary", return_value="/fake/ffmpeg"), \
+                 self.assertLogs("yt2mp3", level=_logging.ERROR) as captured_logs:
+                result = yd.download(
+                    url="https://fake.invalid/v",
+                    output_dir=tmp,
+                    audio_only=False,
+                    split=False,
+                )
+
+        self.assertIsNone(result)
+        self.assertEqual(len(captured_opts), 1)
+        # Actionable next-step guidance must appear on the non-bot path,
+        # mirroring the retry-failure path's user-facing log.
+        joined = "\n".join(captured_logs.output)
+        self.assertIn("Download failed", joined)
+        self.assertIn("yt-dlp", joined)
+
+    def test_video_mode_http_429_does_not_retry(self):
+        """HTTP 429 is a rate-limit, not a bot-challenge. yt-dlp's internal
+        retries=5 already handles it — our custom retry must NOT fire."""
+        import yt_dlp as real_yt_dlp
+
+        def only_attempt(opts, tmp_dir):
+            raise real_yt_dlp.utils.DownloadError(
+                "ERROR: [youtube] HTTP Error 429: Too Many Requests"
+            )
+
+        fake, captured_opts, _ = self._build_fake_yt_dlp([only_attempt])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict(sys.modules, {"yt_dlp": fake}), \
+                 mock.patch.object(yd, "find_binary", return_value="/fake/ffmpeg"):
+                result = yd.download(
+                    url="https://fake.invalid/v",
+                    output_dir=tmp,
+                    audio_only=False,
+                    split=False,
+                )
+
+        self.assertIsNone(result)
+        self.assertEqual(len(captured_opts), 1)
+
+    def test_video_mode_both_attempts_fail_returns_none(self):
+        """Bot-challenge on both attempts -> two calls, returns None."""
+        import yt_dlp as real_yt_dlp
+
+        def bot_fail(opts, tmp_dir):
+            raise real_yt_dlp.utils.DownloadError(
+                "ERROR: [youtube] Sign in to confirm you're not a bot"
+            )
+
+        fake, captured_opts, _ = self._build_fake_yt_dlp([bot_fail, bot_fail])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict(sys.modules, {"yt_dlp": fake}), \
+                 mock.patch.object(yd, "find_binary", return_value="/fake/ffmpeg"):
+                result = yd.download(
+                    url="https://fake.invalid/v",
+                    output_dir=tmp,
+                    audio_only=False,
+                    split=False,
+                )
+
+        self.assertIsNone(result)
+        self.assertEqual(len(captured_opts), 2)
+        # Retry call still used android_vr.
+        self.assertEqual(
+            captured_opts[1]["extractor_args"],
+            {"youtube": {"player_client": ["android_vr"]}},
+        )
+
+    def test_video_mode_first_attempt_succeeds_no_retry(self):
+        """Happy path: first attempt succeeds, no retry, no extractor_args injected."""
+        def good(opts, tmp_dir):
+            Path(os.path.join(tmp_dir, "download.mp4")).touch()
+            return {"title": "Happy Path", "duration": 30}
+
+        fake, captured_opts, _ = self._build_fake_yt_dlp([good])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict(sys.modules, {"yt_dlp": fake}), \
+                 mock.patch.object(yd, "find_binary", return_value="/fake/ffmpeg"):
+                result = yd.download(
+                    url="https://fake.invalid/v",
+                    output_dir=tmp,
+                    audio_only=False,
+                    split=False,
+                )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(len(captured_opts), 1)
+        self.assertNotIn("extractor_args", captured_opts[0])
+
+
+class TestDownloadCollisionAndMissingFile(unittest.TestCase):
+    """Coverage for download()'s collision suffix branch and the no-matching-file branch."""
+
+    def _make_fake_yt_dlp(self, produced_ext: str = "mp3", title: str = "Test Video"):
+        import yt_dlp as real_yt_dlp
+
+        class FakeYDL:
+            def __init__(self, opts):
+                self.opts = opts
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def extract_info(self, url, download):
+                tmp_dir = os.path.dirname(self.opts["outtmpl"])
+                Path(os.path.join(tmp_dir, f"download.{produced_ext}")).touch()
+                return {"title": title, "duration": 60}
+
+        fake = mock.MagicMock()
+        fake.YoutubeDL = FakeYDL
+        fake.utils.sanitize_filename = real_yt_dlp.utils.sanitize_filename
+        fake.utils.DownloadError = real_yt_dlp.utils.DownloadError
+        return fake
+
+    def test_collision_appends_counter_suffix(self):
+        """If Test_Video.mp3 exists, downloaded file lands at Test_Video_1.mp3."""
+        fake_yt_dlp = self._make_fake_yt_dlp(produced_ext="mp3", title="Test Video")
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            (out / "Test_Video.mp3").write_text("pre-existing")
+            with mock.patch.dict(sys.modules, {"yt_dlp": fake_yt_dlp}), \
+                 mock.patch.object(yd, "find_binary", return_value="/fake/ffmpeg"):
+                result = yd.download(
+                    url="https://fake.invalid/v",
+                    output_dir=str(out),
+                    audio_only=True,
+                    split=False,
+                )
+            self.assertIsNotNone(result)
+            self.assertEqual(result.name, "Test_Video_1.mp3")
+            self.assertTrue(result.exists())
+
+    def test_double_collision_increments_counter(self):
+        """If Test_Video.mp3 and Test_Video_1.mp3 both exist, lands at Test_Video_2.mp3."""
+        fake_yt_dlp = self._make_fake_yt_dlp(produced_ext="mp3", title="Test Video")
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            (out / "Test_Video.mp3").write_text("pre-existing-a")
+            (out / "Test_Video_1.mp3").write_text("pre-existing-b")
+            with mock.patch.dict(sys.modules, {"yt_dlp": fake_yt_dlp}), \
+                 mock.patch.object(yd, "find_binary", return_value="/fake/ffmpeg"):
+                result = yd.download(
+                    url="https://fake.invalid/v",
+                    output_dir=str(out),
+                    audio_only=True,
+                    split=False,
+                )
+            self.assertIsNotNone(result)
+            self.assertEqual(result.name, "Test_Video_2.mp3")
+            self.assertTrue(result.exists())
+
+    def test_no_matching_file_in_temp_dir_returns_none(self):
+        """FakeYDL succeeds but produces no download.* file — download() must return None."""
+        import yt_dlp as real_yt_dlp
+
+        class EmptyFakeYDL:
+            def __init__(self, opts):
+                self.opts = opts
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def extract_info(self, url, download):
+                # Note: do NOT create any download.* file in temp_dir.
+                return {"title": "Nothing", "duration": 30}
+
+        fake = mock.MagicMock()
+        fake.YoutubeDL = EmptyFakeYDL
+        fake.utils.sanitize_filename = real_yt_dlp.utils.sanitize_filename
+        fake.utils.DownloadError = real_yt_dlp.utils.DownloadError
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict(sys.modules, {"yt_dlp": fake}), \
+                 mock.patch.object(yd, "find_binary", return_value="/fake/ffmpeg"):
+                result = yd.download(
+                    url="https://fake.invalid/v",
+                    output_dir=tmp,
+                    audio_only=True,
+                    split=False,
+                )
+            self.assertIsNone(result)
 
 
 class TestMain(unittest.TestCase):
