@@ -24,6 +24,15 @@ DEFAULT_URL_FILE = Path(__file__).resolve().parent / "youtube_url.txt"
 
 log = logging.getLogger("yt2mp3")
 
+# yt-dlp message substring for the YouTube bot-challenge. NOTE: this is
+# fragile by design — yt-dlp's error text can shift between releases. When
+# bumping the yt-dlp pin in requirements.txt, re-verify this substring still
+# appears in the upstream extractor error. HTTP 429 is explicitly NOT a
+# bot-challenge — it's a rate limit and yt-dlp's built-in retries=5 handles it.
+BOT_CHALLENGE_MARKERS = (
+    "Sign in to confirm you're not a bot",
+)
+
 
 # --- helpers ---------------------------------------------------------------
 
@@ -204,15 +213,52 @@ def download(
         ydl_opts = {**common_opts, "format": select_format(quality)}
         log.info("Video mode: quality=%s", quality)
 
-    try:
+    def _try_extract(opts):
+        """Run yt-dlp once. Returns (info, error). info is None on failure."""
         try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            with yt_dlp.YoutubeDL(opts) as ydl:
                 log.info("Downloading from: %s", url)
                 log.info("Target folder: %s", out)
-                info = ydl.extract_info(url, download=True)
+                return ydl.extract_info(url, download=True), None
         except yt_dlp.utils.DownloadError as exc:
-            log.error("Download failed: %s", exc)
-            return None
+            return None, exc
+
+    def _is_bot_challenge(exc) -> bool:
+        """Return True iff exc looks like a YouTube bot-challenge (not 429, not generic)."""
+        msg = str(exc)
+        return any(marker in msg for marker in BOT_CHALLENGE_MARKERS)
+
+    def _reset_temp_dir():
+        """Nuke and recreate temp_dir between retry attempts. More robust than
+        an allowlist: yt-dlp can leave .part, .ytdl, .info.json, .tmp, partial
+        .webm/.m4a, and fragment artifacts. The set drifts as yt-dlp evolves."""
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        temp_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        info, exc = _try_extract(ydl_opts)
+        if info is None:
+            if _is_bot_challenge(exc):
+                log.warning(
+                    "YouTube bot-challenge detected; retrying once with player_client=android_vr"
+                )
+                _reset_temp_dir()
+                retry_opts = {
+                    **ydl_opts,
+                    "extractor_args": {"youtube": {"player_client": ["android_vr"]}},
+                }
+                info, exc = _try_extract(retry_opts)
+                if info is None:
+                    log.error(
+                        "Bot-challenge retry with android_vr also failed: %s. "
+                        "The YouTube anti-bot fingerprint may have changed; "
+                        "check yt-dlp issues and consider bumping the yt-dlp pin.",
+                        exc,
+                    )
+                    return None
+            else:
+                log.error("Download failed: %s", exc)
+                return None
 
         raw_title = info.get("title") or "download"
         title = yt_dlp.utils.sanitize_filename(raw_title, restricted=True) or "download"
